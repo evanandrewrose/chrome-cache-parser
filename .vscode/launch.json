@@ -1,0 +1,70 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in library 'chrome-cache-parser'",
+            "env": {
+                "RUST_BACKTRACE": "full"
+            },
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib",
+                    "--package=chrome-cache-parser"
+                ],
+                "filter": {
+                    "name": "chrome-cache-parser",
+                    "kind": "lib"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'main'",
+            "env": {
+                "RUST_BACKTRACE": "full"
+            },
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=main",
+                    "--package=chrome-cache-parser"
+                ],
+                "filter": {
+                    "name": "main",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'main'",
+            "env": {
+                "RUST_BACKTRACE": "full"
+            },
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=main",
+                    "--package=chrome-cache-parser"
+                ],
+                "filter": {
+                    "name": "main",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
