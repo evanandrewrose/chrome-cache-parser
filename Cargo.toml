@@ -2,6 +2,10 @@
 name = "chrome-cache-parser"
 version = "0.1.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Chrome cache parser"
+repository = "https://github.com/evanandrewrose/chrome-cache-parser"
+readme = "README.md"
 
 [lib]
 name = "chrome_cache_parser"
