@@ -29,3 +29,17 @@ impl From<WindowsEpochMicroseconds> for DateTime<Local> {
         utc.with_timezone(&Local)
     }
 }
+
+#[cfg(test)]
+#[test]
+fn test_windows_epoch_microseconds() {
+    use chrono::{Datelike, Timelike};
+    let windows_us = WindowsEpochMicroseconds(13_360_111_021_811_283);
+    let date = DateTime::<Utc>::from(windows_us);
+
+    assert_eq!(date.year(), 2024);
+    assert_eq!(date.month(), 5);
+    assert_eq!(date.day(), 13);
+    assert_eq!(date.hour(), 21);
+    assert_eq!(date.second(), 1);
+}
