@@ -50,13 +50,18 @@ fn display_cache(args: Args) -> CCPResult<()> {
     let entries = cache.entries().unwrap();
 
     if !args.silent {
-        entries.for_each(|e| {
-            let e = e.get().unwrap();
+        entries.for_each(|mut e| {
+            let cache_entry = &e.get().unwrap();
             println!(
                 "[{:?}\t=>\t{:?}]: {:?}",
-                e.hash,
-                e.key,
-                DateTime::<Local>::from(e.creation_time)
+                cache_entry.hash,
+                cache_entry.key,
+                DateTime::<Local>::from(cache_entry.creation_time)
+            );
+            let ranking = e.get_rankings_node().unwrap();
+            println!(
+                "\tlast used\t{:?}",
+                DateTime::<Local>::from(ranking.get().unwrap().last_used)
             );
         });
     }

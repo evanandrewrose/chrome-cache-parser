@@ -10,15 +10,29 @@ use crate::{
 use static_assertions as sa;
 
 const BLOCK_MAGIC: u32 = 0xc104cac3;
-const BLOCK_HEADER_SIZE: u32 = 8192;
-const MAX_BLOCKS: u32 = (BLOCK_HEADER_SIZE - 80) * 8;
+const BLOCK_HEADER_SIZE: usize = 8192;
+const MAX_BLOCKS: usize = (BLOCK_HEADER_SIZE - 80) * 8;
 const INLINE_KEY_SIZE: usize = 160;
 
 #[derive(Debug, FromZeroes, FromBytes)]
 #[repr(C)]
 struct AllocBitmap {
-    data: [u32; MAX_BLOCKS as usize / 32],
+    data: [u32; MAX_BLOCKS / 32],
 }
+
+#[derive(Debug, FromZeroes, FromBytes, Clone)]
+#[repr(C, packed(4))]
+pub struct RankingsNode {
+    pub last_used: WindowsEpochMicroseconds,
+    pub last_modified: WindowsEpochMicroseconds,
+    pub next: CacheAddr,
+    pub prev: CacheAddr,
+    pub contents: CacheAddr,
+    pub dirty: i32,
+    pub self_hash: u32,
+}
+
+sa::const_assert_eq!(mem::size_of::<RankingsNode>(), 36);
 
 // See: https://chromium.googlesource.com/chromium/src/net/+/ddbc6c5954c4bee29902082eb9052405e83abc02/disk_cache/disk_format_base.h
 #[derive(Debug, FromZeroes, FromBytes)]
@@ -80,8 +94,7 @@ pub struct BlockFileCacheEntry {
     pub key: InlineCacheKey,
 }
 
-const BLOCK_FILE_ENTRY_SIZE: usize = mem::size_of::<BlockFileCacheEntry>();
-sa::const_assert_eq!(BLOCK_FILE_ENTRY_SIZE, 256);
+sa::const_assert_eq!(mem::size_of::<BlockFileCacheEntry>(), 256);
 
 /// An iterator over the logical entries in a map of block files. Data files are lazily loaded and
 /// cached. An entry in the chrome cache is a node in a linked list of entries in the block files.
@@ -98,21 +111,47 @@ sa::const_assert_eq!(BLOCK_FILE_ENTRY_SIZE, 256);
 /// entry and yields any subsequent entries in the linked list.
 pub struct LazyBlockFileCacheEntryIterator {
     current: Option<CacheAddr>,
-    cache_path: PathBuf,
-    data_files: Rc<RefCell<HashMap<u32, LazyBlockFile>>>,
+    data_files: Rc<RefCell<DataFiles>>,
 }
 
 impl LazyBlockFileCacheEntryIterator {
     pub fn new(
-        cache_path: PathBuf,
-        data_files: Rc<RefCell<HashMap<u32, LazyBlockFile>>>,
+        data_files: Rc<RefCell<DataFiles>>,
         start: CacheAddr,
     ) -> LazyBlockFileCacheEntryIterator {
         LazyBlockFileCacheEntryIterator {
             current: Some(start),
-            cache_path,
             data_files,
         }
+    }
+}
+
+/// A map of data files, lazily loaded and cached. Provides a method to get a cache entry from a
+/// cache address, selecting the approapriate data file by the file number in the cache address.
+pub struct DataFiles {
+    data_files: HashMap<u32, LazyBlockFile>,
+    path: PathBuf,
+}
+
+impl DataFiles {
+    pub fn new(data_files: HashMap<u32, LazyBlockFile>, path: PathBuf) -> DataFiles {
+        DataFiles { data_files, path }
+    }
+
+    fn get(&mut self, file_number: u32) -> &LazyBlockFile {
+        self.data_files.entry(file_number).or_insert_with(|| {
+            let file_path = self.path.join(format!("data_{}", file_number));
+
+            let mut file = fs::File::open(file_path).unwrap();
+            let mut buf: Vec<u8> = Vec::new();
+            file.read_to_end(&mut buf).unwrap();
+            LazyBlockFile::new(Rc::new(buf))
+        })
+    }
+
+    pub fn get_entry(&mut self, addr: &CacheAddr) -> CCPResult<BufferSlice> {
+        let data_file = self.get(addr.file_number());
+        data_file.entry(addr)
     }
 }
 
@@ -124,18 +163,8 @@ impl Iterator for LazyBlockFileCacheEntryIterator {
 
         let mut data_files = (*self.data_files).borrow_mut();
 
-        let data_file = data_files.entry(current.file_number()).or_insert_with(|| {
-            let file_path = self
-                .cache_path
-                .join(format!("data_{}", current.file_number()));
-
-            let mut file = fs::File::open(file_path).unwrap();
-            let mut buf: Vec<u8> = Vec::new();
-            file.read_to_end(&mut buf).unwrap();
-            LazyBlockFile::new(Rc::new(buf))
-        });
-
-        let current = data_file.entry(&current).ok()?;
+        let current = data_files.get_entry(&current).ok()?;
+        let current = LazyBlockFileCacheEntry::new(current, Rc::clone(&self.data_files));
 
         if let Ok(current) = current.get() {
             let next = current.next;
@@ -148,38 +177,79 @@ impl Iterator for LazyBlockFileCacheEntryIterator {
     }
 }
 
-pub struct LazyBlockFileCacheEntry {
+pub struct LazyRankingsNode {
+    buffer: BufferSlice,
+}
+
+/// A slice to a shared buffer. Enables us to pass a reference to the buffer to all of the
+/// transmuters.
+pub struct BufferSlice {
     buffer: Rc<Vec<u8>>,
-    address: usize,
+    start: usize,
     size: usize,
 }
 
-impl LazyBlockFileCacheEntry {
-    pub fn new(buffer: Rc<Vec<u8>>, address: usize, size: usize) -> LazyBlockFileCacheEntry {
-        LazyBlockFileCacheEntry {
+impl BufferSlice {
+    pub fn new(buffer: Rc<Vec<u8>>, start: usize, size: usize) -> BufferSlice {
+        BufferSlice {
             buffer,
-            address,
+            start,
             size,
         }
     }
 
-    pub fn from_block_file(
-        block_file: &LazyBlockFile,
-        addr: &CacheAddr,
-    ) -> CCPResult<LazyBlockFileCacheEntry> {
-        block_file.entry(addr)
+    pub fn get(&self) -> &[u8] {
+        &self.buffer[self.start..self.start + self.size]
+    }
+}
+
+impl LazyRankingsNode {
+    pub fn get(&self) -> CCPResult<&RankingsNode> {
+        RankingsNode::ref_from(self.buffer.get()).ok_or(error::CCPError::DataMisalignment(format!(
+            "rankings node at {}",
+            self.buffer.start
+        )))
+    }
+}
+
+pub struct LazyBlockFileCacheEntry {
+    buffer: BufferSlice,
+    data_files: Rc<RefCell<DataFiles>>,
+}
+
+impl LazyBlockFileCacheEntry {
+    pub fn new(
+        buffer: BufferSlice,
+        block_files: Rc<RefCell<DataFiles>>,
+    ) -> LazyBlockFileCacheEntry {
+        LazyBlockFileCacheEntry {
+            buffer,
+            data_files: block_files,
+        }
     }
 
     /// Parse the entry from the buffer and return a reference to it.
     pub fn get(&self) -> CCPResult<&BlockFileCacheEntry> {
-        let entry_location = BLOCK_HEADER_SIZE as usize + self.address * self.size;
-        BlockFileCacheEntry::ref_from(
-            &self.buffer[entry_location..entry_location + BLOCK_FILE_ENTRY_SIZE],
-        )
-        .ok_or(error::CCPError::DataMisalignment(format!(
-            "entry at {}",
-            entry_location
-        )))
+        BlockFileCacheEntry::ref_from(self.buffer.get()).ok_or(error::CCPError::DataMisalignment(
+            format!("block file cache entry at {}", self.buffer.start),
+        ))
+    }
+
+    pub fn get_rankings_node(&mut self) -> CCPResult<LazyRankingsNode> {
+        let cache_entry = self.get()?;
+
+        if !cache_entry.rankings_node.is_initialized() {
+            return Err(error::CCPError::InvalidData(
+                "rankings node not initialized".to_string(),
+            ));
+        }
+
+        let mut data_files = self.data_files.borrow_mut();
+        let ranking_entry = data_files.get_entry(&cache_entry.rankings_node)?;
+
+        Ok(LazyRankingsNode {
+            buffer: ranking_entry,
+        })
     }
 }
 
@@ -200,6 +270,7 @@ impl LazyBlockFile {
             .ok_or(error::CCPError::DataMisalignment(
                 "block file header".to_string(),
             ))?;
+
         if header.magic != BLOCK_MAGIC {
             return Err(error::CCPError::InvalidData(format!(
                 "expected block magic {:x}, got {:x}",
@@ -210,11 +281,11 @@ impl LazyBlockFile {
     }
 
     /// Returns a lazily evaluated cache entry at the given address.
-    pub fn entry(&self, addr: &CacheAddr) -> CCPResult<LazyBlockFileCacheEntry> {
+    pub fn entry(&self, addr: &CacheAddr) -> CCPResult<BufferSlice> {
         let header = self.header()?;
-        Ok(LazyBlockFileCacheEntry::new(
+        Ok(BufferSlice::new(
             Rc::clone(&self.buffer),
-            addr.start_block() as usize,
+            BLOCK_HEADER_SIZE + addr.start_block() as usize * header.entry_size as usize,
             header.entry_size as usize,
         ))
     }

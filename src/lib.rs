@@ -11,7 +11,7 @@ use crate::cache_index::CacheVersion;
 pub use crate::cache_index::IndexHeader;
 pub use crate::error::{CCPError, CCPResult};
 
-use block_file::{LazyBlockFile, LazyBlockFileCacheEntry, LazyBlockFileCacheEntryIterator};
+use block_file::{DataFiles, LazyBlockFileCacheEntry, LazyBlockFileCacheEntryIterator};
 use cache_address::CACHE_ADDRESS_SIZE;
 use cache_index::INDEX_HEADER_SIZE;
 use std::cell::RefCell;
@@ -87,17 +87,17 @@ impl ChromeCache {
 
     pub fn entries(&self) -> CCPResult<impl Iterator<Item = LazyBlockFileCacheEntry> + '_> {
         // A map from the data file number to the data file.
-        let data_files: Rc<RefCell<HashMap<u32, LazyBlockFile>>> =
-            Rc::new(RefCell::new(HashMap::new()));
+        let data_files = Rc::new(RefCell::new(DataFiles::new(
+            HashMap::new(),
+            self.path.to_path_buf(),
+        )));
 
         let entries = self
             .addresses()?
             .iter()
             .filter(|addr| addr.is_initialized())
             .zip(std::iter::repeat(data_files))
-            .flat_map(|(addr, data_files)| {
-                LazyBlockFileCacheEntryIterator::new(self.path.to_path_buf(), data_files, *addr)
-            });
+            .flat_map(|(addr, data_files)| LazyBlockFileCacheEntryIterator::new(data_files, *addr));
 
         Ok(entries)
     }
