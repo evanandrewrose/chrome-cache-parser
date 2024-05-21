@@ -13,9 +13,8 @@ const WIN_TO_UNIX_EPOCH_DIFF_MICROSEC: u64 = WIN_TO_UNIX_EPOCH_DELTA_SEC * MICRO
 #[derive(Debug, FromZeroes, FromBytes, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct WindowsEpochMicroseconds(u64);
 
-#[allow(dead_code)] // Exposed for library users.
 impl WindowsEpochMicroseconds {
-    fn into_datetime_utc(self) -> CCPResult<DateTime<Utc>> {
+    pub fn into_datetime_utc(self) -> CCPResult<DateTime<Utc>> {
         let windows_micro_seconds: u64 = self.0;
 
         let unix_micro_seconds = windows_micro_seconds
@@ -28,7 +27,7 @@ impl WindowsEpochMicroseconds {
             .ok_or(CCPError::InvalidTimestamp(windows_micro_seconds))
     }
 
-    fn into_datetime_local(self) -> CCPResult<DateTime<Local>> {
+    pub fn into_datetime_local(self) -> CCPResult<DateTime<Local>> {
         let utc: CCPResult<DateTime<Utc>> = self.into_datetime_utc();
         Ok(utc?.with_timezone(&Local))
     }

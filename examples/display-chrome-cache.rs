@@ -56,12 +56,17 @@ fn display_cache(args: Args) -> CCPResult<()> {
                 "[{:?}\t=>\t{:?}]: {:?}",
                 cache_entry.hash,
                 cache_entry.key,
-                DateTime::<Local>::from(cache_entry.creation_time)
+                cache_entry.creation_time.into_datetime_local().unwrap()
             );
             let ranking = e.get_rankings_node().unwrap();
             println!(
                 "\tlast used\t{:?}",
-                DateTime::<Local>::from(ranking.get().unwrap().last_used)
+                ranking
+                    .get()
+                    .unwrap()
+                    .last_used
+                    .into_datetime_local()
+                    .unwrap()
             );
         });
     }
