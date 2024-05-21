@@ -19,4 +19,6 @@ pub enum CCPError {
     IndexDoesNotExist(String),
     #[error("chrome cache location could not be determined")]
     CacheLocationCouldNotBeDetermined(),
+    #[error("invalid timestamp ({0})")]
+    InvalidTimestamp(u64),
 }
