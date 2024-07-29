@@ -2,7 +2,6 @@ use clap::{CommandFactory, Parser};
 use std::{fmt::Debug, path::PathBuf};
 
 use chrome_cache_parser::{CCPError, CCPResult, ChromeCache};
-use chrono::{DateTime, Local};
 
 /// A simple command line tool to display the contents of a Chrome cache directory.
 #[derive(Parser, Debug)]
