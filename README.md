@@ -2,7 +2,7 @@
 
 A safe, zero-copy, rust-based chrome cache parser, supporting chrome cache versions 2.0, 2.1, and 3.0.
 
-So far, it only parses the cache entries themselves. You can use it to programmatically inspect the cache index and, for example, display the known cache keys (e.g., URIs) stored in the cache, along with some entry metadata (timestamp, etc.). It provides no utility for extracting the cache data itself since I currently have no purpose for that capability. It also only supports cache keys stored inline with the cache entry, not the longer, out-of-band cache keys.
+So far, it only parses the cache entries themselves and only for the "block" file format used on Windows. You can use it to programmatically inspect the cache index and, for example, display the known cache keys (e.g., URIs) stored in the cache, along with some entry metadata (timestamp, etc.). It provides no utility for extracting the cache data itself since I currently have no purpose for that capability. It also only supports cache keys stored inline with the cache entry, not the longer, out-of-band cache keys.
 
 ## Run The Example
 
