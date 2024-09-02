@@ -13,6 +13,8 @@ pub enum CCPError {
     UnsupportedVersion(String),
     #[error("invalid data ({0})")]
     InvalidData(String),
+    #[error("invalid state ({0})")]
+    InvalidState(String),
     #[error("data misalignment ({0})")]
     DataMisalignment(String),
     #[error("chrome cache index does not exist at {0}")]

@@ -1,11 +1,22 @@
-use std::{cell::RefCell, collections::HashMap, fmt, fs, io::Read, mem, path::PathBuf, rc::Rc};
+use std::{
+    cell::RefCell,
+    cmp::min,
+    collections::HashMap,
+    fmt,
+    fs::{self, File},
+    io::{self, BufReader, Read},
+    mem,
+    path::PathBuf,
+    rc::Rc,
+};
 
 use zerocopy::{FromBytes, FromZeroes};
 
 use crate::{
-    cache_address::CacheAddr,
+    cache_address::{CacheAddr, FileType},
     error::{self, CCPResult},
     time::WindowsEpochMicroseconds,
+    CCPError,
 };
 use static_assertions as sa;
 
@@ -73,6 +84,37 @@ impl fmt::Display for InlineCacheKey {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+#[repr(u32)]
+pub enum BlockCacheEntryState {
+    Normal = 0,
+    Evicted = 1,
+    Doomed = 2,
+    Unknown,
+}
+
+impl From<i32> for BlockCacheEntryState {
+    fn from(value: i32) -> Self {
+        match value {
+            0 => BlockCacheEntryState::Normal,
+            1 => BlockCacheEntryState::Evicted,
+            2 => BlockCacheEntryState::Doomed,
+            _ => BlockCacheEntryState::Unknown,
+        }
+    }
+}
+
+#[derive(Debug, FromZeroes, FromBytes, Clone, Copy)]
+pub struct BlockCacheEntryStateField(i32);
+
+impl BlockCacheEntryStateField {
+    // zerocopy lib doesn't provide a mechanism for decoding enums that don't represent all
+    // states, see: https://github.com/google/zerocopy/issues/1429
+    pub fn kind(&self) -> BlockCacheEntryState {
+        BlockCacheEntryState::from(self.0)
+    }
+}
+
 // See: https://chromium.googlesource.com/chromium/src/net/+/ddbc6c5954c4bee29902082eb9052405e83abc02/disk_cache/disk_format.h#101
 #[derive(Debug, FromZeroes, FromBytes, Clone)]
 #[repr(C)]
@@ -82,7 +124,7 @@ pub struct BlockFileCacheEntry {
     pub rankings_node: CacheAddr,
     pub reuse_count: i32,
     pub refetch_count: i32,
-    pub state: i32,
+    pub state: BlockCacheEntryStateField,
     pub creation_time: WindowsEpochMicroseconds,
     pub key_len: i32,
     pub long_key: CacheAddr,
@@ -95,6 +137,84 @@ pub struct BlockFileCacheEntry {
 }
 
 sa::const_assert_eq!(mem::size_of::<BlockFileCacheEntry>(), 256);
+
+struct BlockFileStreamReader {
+    addr: CacheAddr,
+    size: usize,
+    data_files: Rc<RefCell<DataFiles>>,
+    read_offset: usize,
+}
+
+impl BlockFileStreamReader {
+    pub fn new(
+        addr: CacheAddr,
+        size: usize,
+        data_files: Rc<RefCell<DataFiles>>,
+    ) -> BlockFileStreamReader {
+        BlockFileStreamReader {
+            addr,
+            size,
+            data_files,
+            read_offset: 0,
+        }
+    }
+}
+
+impl Read for BlockFileStreamReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.read_offset >= self.size {
+            return Ok(0);
+        }
+
+        let mut data_files = self.data_files.borrow_mut();
+        let data_file = data_files.get(self.addr.file_number());
+
+        let block_size = self
+            .addr
+            .file_type()
+            .block_size()
+            .or(Err(io::ErrorKind::InvalidData))?;
+        let start_addr =
+            BLOCK_HEADER_SIZE + self.addr.start_block() as usize * block_size + self.read_offset;
+        let to_be_read = min(buf.len(), self.size - self.read_offset);
+        let end_addr = start_addr + to_be_read;
+
+        buf[0..to_be_read].copy_from_slice(&data_file.buffer[start_addr..end_addr]);
+
+        self.read_offset += to_be_read;
+
+        Ok(to_be_read)
+    }
+}
+
+struct ExternalFileReader {
+    addr: CacheAddr,
+    file: Option<BufReader<File>>,
+    cache_path: PathBuf,
+}
+
+impl ExternalFileReader {
+    pub fn new(addr: CacheAddr, cache_path: PathBuf) -> ExternalFileReader {
+        ExternalFileReader {
+            addr,
+            file: None,
+            cache_path,
+        }
+    }
+}
+
+impl Read for ExternalFileReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(file) = &mut self.file {
+            file.read(buf)
+        } else {
+            let file_name = format!("f_{:0>6x}", self.addr.file_number());
+            let reader = File::open(self.cache_path.join(file_name))?;
+            self.file.replace(BufReader::new(reader));
+            self.read(buf)
+        }
+    }
+}
 
 /// An iterator over the logical entries in a map of block files. Data files are lazily loaded and
 /// cached. An entry in the chrome cache is a node in a linked list of entries in the block files.
@@ -112,16 +232,19 @@ sa::const_assert_eq!(mem::size_of::<BlockFileCacheEntry>(), 256);
 pub struct LazyBlockFileCacheEntryIterator {
     current: Option<CacheAddr>,
     data_files: Rc<RefCell<DataFiles>>,
+    cache_path: PathBuf,
 }
 
 impl LazyBlockFileCacheEntryIterator {
     pub fn new(
         data_files: Rc<RefCell<DataFiles>>,
         start: CacheAddr,
+        cache_path: PathBuf,
     ) -> LazyBlockFileCacheEntryIterator {
         LazyBlockFileCacheEntryIterator {
             current: Some(start),
             data_files,
+            cache_path,
         }
     }
 }
@@ -151,7 +274,7 @@ impl DataFiles {
 
     pub fn get_entry(&mut self, addr: &CacheAddr) -> CCPResult<BufferSlice> {
         let data_file = self.get(addr.file_number());
-        data_file.entry(addr)
+        data_file.get_buffer(addr)
     }
 }
 
@@ -164,7 +287,11 @@ impl Iterator for LazyBlockFileCacheEntryIterator {
         let mut data_files = (*self.data_files).borrow_mut();
 
         let current = data_files.get_entry(&current).ok()?;
-        let current = LazyBlockFileCacheEntry::new(current, Rc::clone(&self.data_files));
+        let current = LazyBlockFileCacheEntry::new(
+            current,
+            Rc::clone(&self.data_files),
+            self.cache_path.clone(),
+        );
 
         if let Ok(current) = current.get() {
             let next = current.next;
@@ -215,16 +342,19 @@ impl LazyRankingsNode {
 pub struct LazyBlockFileCacheEntry {
     buffer: BufferSlice,
     data_files: Rc<RefCell<DataFiles>>,
+    cache_path: PathBuf,
 }
 
 impl LazyBlockFileCacheEntry {
     pub fn new(
         buffer: BufferSlice,
         block_files: Rc<RefCell<DataFiles>>,
+        cache_path: PathBuf,
     ) -> LazyBlockFileCacheEntry {
         LazyBlockFileCacheEntry {
             buffer,
             data_files: block_files,
+            cache_path,
         }
     }
 
@@ -233,6 +363,37 @@ impl LazyBlockFileCacheEntry {
         BlockFileCacheEntry::ref_from(self.buffer.get()).ok_or(error::CCPError::DataMisalignment(
             format!("block file cache entry at {}", self.buffer.start),
         ))
+    }
+
+    /// Return readers for the actual cache data. Typically, this is a header stream followed by
+    /// a content stream.
+    pub fn stream_readers(self) -> CCPResult<Vec<CCPResult<Box<dyn Read>>>> {
+        let entry = self.get().or(Err(CCPError::InvalidState(
+            "Unable to read entry".to_string(),
+        )))?;
+
+        Ok(entry
+            .data_addr
+            .iter()
+            .zip(entry.data_size.iter())
+            .map(|(addr, size)| match addr.file_type() {
+                FileType::External => Ok(Box::new(ExternalFileReader::new(
+                    *addr,
+                    self.cache_path.clone(),
+                )) as Box<dyn Read>),
+                FileType::Block1k | FileType::Block256 | FileType::Block4k => Ok(Box::new(
+                    BlockFileStreamReader::new(*addr, *size as usize, self.data_files.clone()),
+                )
+                    as Box<dyn Read>),
+                _ => Err(CCPError::InvalidState(
+                    format!(
+                        "Requested stream reader of nonsense address type {:?}",
+                        addr.file_type()
+                    )
+                    .to_string(),
+                )),
+            })
+            .collect())
     }
 
     pub fn get_rankings_node(&mut self) -> CCPResult<LazyRankingsNode> {
@@ -280,8 +441,7 @@ impl LazyBlockFile {
         Ok(header)
     }
 
-    /// Returns a lazily evaluated cache entry at the given address.
-    pub fn entry(&self, addr: &CacheAddr) -> CCPResult<BufferSlice> {
+    pub fn get_buffer(&self, addr: &CacheAddr) -> CCPResult<BufferSlice> {
         let header = self.header()?;
         Ok(BufferSlice::new(
             Rc::clone(&self.buffer),

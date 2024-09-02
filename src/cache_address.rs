@@ -1,6 +1,8 @@
 use std::fmt::{self, Debug, Formatter};
 use zerocopy::{FromBytes, FromZeroes};
 
+use crate::{CCPError, CCPResult};
+
 extern crate static_assertions as sa;
 
 const FILE_TYPE_MASK: u32 = 0x70000000;
@@ -12,7 +14,7 @@ const START_BLOCK_MASK: u32 = 0x0000FFFF;
 const NUM_BLOCKS_MASK: u32 = 0x03000000;
 const NUM_BLOCKS_OFFSET: u32 = 24;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum FileType {
     External = 0,
     Rankings = 1,
@@ -22,6 +24,19 @@ pub enum FileType {
     BlockFiles = 5,
     BlockEntries = 6,
     BlockEvicted = 7,
+}
+
+impl FileType {
+    pub fn block_size(&self) -> CCPResult<usize> {
+        match &self {
+            FileType::Block256 => Ok(256),
+            FileType::Block1k => Ok(1024),
+            FileType::Block4k => Ok(1024 * 4),
+            _ => Err(CCPError::InvalidState(
+                "Block size requested for non block file".to_string(),
+            )),
+        }
+    }
 }
 
 // See: https://chromium.googlesource.com/chromium/src/net/+/ddbc6c5954c4bee29902082eb9052405e83abc02/disk_cache/disk_format_base.h#28

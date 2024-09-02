@@ -97,7 +97,9 @@ impl ChromeCache {
             .iter()
             .filter(|addr| addr.is_initialized())
             .zip(std::iter::repeat(data_files))
-            .flat_map(|(addr, data_files)| LazyBlockFileCacheEntryIterator::new(data_files, *addr));
+            .flat_map(|(addr, data_files)| {
+                LazyBlockFileCacheEntryIterator::new(data_files, *addr, self.path.to_path_buf())
+            });
 
         Ok(entries)
     }
