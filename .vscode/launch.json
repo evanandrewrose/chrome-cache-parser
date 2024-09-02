@@ -26,18 +26,17 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'main'",
+            "name": "Debug example 'display-chrome-cache'",
             "env": {
                 "RUST_BACKTRACE": "full"
             },
             "cargo": {
                 "args": [
-                    "build",
-                    "--bin=main",
-                    "--package=chrome-cache-parser"
+                    "run",
+                    "--example=display-chrome-cache"
                 ],
                 "filter": {
-                    "name": "main",
+                    "name": "display-chrome-cache",
                     "kind": "bin"
                 }
             },
