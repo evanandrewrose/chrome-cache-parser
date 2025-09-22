@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     cmp::min,
-    collections::HashMap,
+    collections::{hash_map::Entry, HashMap},
     fmt,
     fs::{self, File},
     io::{self, BufReader, Read},
@@ -167,7 +167,11 @@ impl Read for BlockFileStreamReader {
         }
 
         let mut data_files = self.data_files.borrow_mut();
-        let data_file = data_files.get(self.addr.file_number());
+        let data_file = match data_files.get(self.addr.file_number()) {
+            Ok(file) => file,
+            Err(CCPError::Io { source }) => return Err(source),
+            Err(err) => return Err(io::Error::new(io::ErrorKind::Other, err)),
+        };
 
         let block_size = self
             .addr
@@ -261,19 +265,21 @@ impl DataFiles {
         DataFiles { data_files, path }
     }
 
-    fn get(&mut self, file_number: u32) -> &LazyBlockFile {
-        self.data_files.entry(file_number).or_insert_with(|| {
-            let file_path = self.path.join(format!("data_{}", file_number));
-
-            let mut file = fs::File::open(file_path).unwrap();
-            let mut buf: Vec<u8> = Vec::new();
-            file.read_to_end(&mut buf).unwrap();
-            LazyBlockFile::new(Rc::new(buf))
+    fn get(&mut self, file_number: u32) -> CCPResult<&LazyBlockFile> {
+        Ok(match self.data_files.entry(file_number) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let file_path = self.path.join(format!("data_{}", file_number));
+                let mut file = fs::File::open(&file_path)?;
+                let mut buf: Vec<u8> = Vec::new();
+                file.read_to_end(&mut buf)?;
+                entry.insert(LazyBlockFile::new(Rc::new(buf)))
+            }
         })
     }
 
     pub fn get_entry(&mut self, addr: &CacheAddr) -> CCPResult<BufferSlice> {
-        let data_file = self.get(addr.file_number());
+        let data_file = self.get(addr.file_number())?;
         data_file.get_buffer(addr)
     }
 }
