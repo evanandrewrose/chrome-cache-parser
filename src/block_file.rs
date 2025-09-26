@@ -70,17 +70,16 @@ pub struct InlineCacheKey {
 
 impl fmt::Debug for InlineCacheKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", std::str::from_utf8(&self.key).unwrap())
+        let key = String::from_utf8_lossy(&self.key);
+        write!(f, "{}", key.trim_end_matches(char::from(0)))
     }
 }
 
 impl fmt::Display for InlineCacheKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let key = std::str::from_utf8(&self.key)
-            .map_err(|_| fmt::Error)?
-            .trim_end_matches(char::from(0));
-        write!(f, "{}", key)?;
-        Ok(())
+        let key = String::from_utf8_lossy(&self.key);
+        let trimmed = key.trim_end_matches(char::from(0));
+        write!(f, "{}", trimmed)
     }
 }
 
